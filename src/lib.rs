@@ -3,14 +3,14 @@
 //! A Rust take on [zca-js](https://github.com/RFS-ADRENO/zca-js): it talks to Zalo the way
 //! the official web client (`chat.zalo.me`) does, so it can log in by QR code or saved
 //! cookies, listen for messages in real time and send messages, quotes, mentions,
-//! reactions, stickers and recalls.
+//! reactions, stickers, images, files, GIFs and recalls.
 //!
 //! **Unofficial.** Zalo has no public API for this; it can change or block it at any time,
 //! and automated use (spam especially) can get an account locked. You are responsible for
 //! complying with Zalo's terms.
 //!
 //! The crate never reads or writes files unless you call [`Credentials::save_private`] /
-//! [`Credentials::load`]: [`Credentials`] are plain serializable data that you can also store
+//! [`Credentials::load`], or send a file by path ([`Upload::path`]): [`Credentials`] are plain serializable data that you can also store
 //! wherever you want. They hold your live session cookies, so keep the file private.
 //!
 //! The listen loop below is **read-only**: it prints what arrives and sends nothing. (Your own
@@ -48,6 +48,21 @@
 //! client.send_text("<thread id>", ThreadType::User, "hello").await?;
 //! # Ok(()) }
 //! ```
+//!
+//! Images, GIFs and files are sent the same way ([`Client::send_image`], [`Client::send_gif`],
+//! [`Client::send_file`], or [`Client::send_attachment`] to let the extension pick). They are
+//! checked against [`Client::share_limits`] before anything is uploaded; a file also needs the
+//! listener running, because Zalo reports where it stored the file on the websocket.
+//!
+//! ```no_run
+//! use zca_rust::{Client, ThreadType, Upload};
+//!
+//! # async fn demo(client: Client) -> zca_rust::Result<()> {
+//! // Replace with the id of a chat you own and want to send to.
+//! let sent = client.send_attachment("<thread id>", ThreadType::User, Upload::path("photo.jpg"), "caption").await?;
+//! println!("sent {} ({} bytes)", sent.file_name, sent.total_size);
+//! # Ok(()) }
+//! ```
 
 #![warn(missing_docs)]
 
@@ -67,6 +82,7 @@ pub mod qr;
 mod react;
 mod session;
 mod sticker;
+mod upload;
 mod ws;
 
 pub use api::{Friend, GroupInfo, Member};
@@ -83,4 +99,5 @@ pub use message::{
 pub use react::{Reaction, ReactionIcon};
 pub use session::{API_TYPE, API_VERSION};
 pub use sticker::{sprite_url, Sticker, SEARCH_MAX, STICKER_URL};
+pub use upload::{SentAttachment, ShareLimits, Upload, UploadKind};
 pub use ws::{Event, ListenOptions, Listener, ReconnectPolicy};

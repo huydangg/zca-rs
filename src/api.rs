@@ -7,7 +7,7 @@
 
 use crate::crypto;
 use crate::error::{Error, Result};
-use crate::http::{api_headers, Http};
+use crate::http::{api_headers, multipart_headers, Http};
 use crate::mention::{utf16_spans, Mention, MentionTarget};
 use crate::message::{id_of, ThreadType, ZaloRef};
 use crate::session::{Session, API_TYPE, API_VERSION};
@@ -277,6 +277,50 @@ pub(crate) async fn run(http: &Http, session: &Session, p: &Planned) -> Result<V
     post_url(http, session, url, &p.params).await
 }
 
+/// A multipart upload ready to go (zca-js `uploadAttachment`, `upthumb`, the `gif` send): the
+/// plain JSON `params` travel AES-encrypted in the query, next to `query`, and the body is a
+/// form with one file part.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PlannedUpload {
+    pub service: &'static str,
+    pub path: &'static str,
+    pub nretry: bool,
+    /// Plain query params besides the encrypted `params` (zca-js's `type`).
+    pub query: Vec<(&'static str, String)>,
+    pub params: Value,
+    /// The form field of the file part.
+    pub field: &'static str,
+    pub file_name: String,
+    pub content_type: &'static str,
+}
+
+/// Run a planned upload with `bytes` as the file part.
+pub(crate) async fn run_upload(http: &Http, session: &Session, p: &PlannedUpload, bytes: Vec<u8>) -> Result<Value> {
+    let mut url = service_url(session, p.service, p.path)?;
+    {
+        let mut q = url.query_pairs_mut();
+        if p.nretry {
+            q.append_pair("nretry", "0");
+        }
+        for (k, v) in &p.query {
+            q.append_pair(k, v);
+        }
+        q.append_pair("params", &crypto::encode_aes(&session.secret_key, &p.params.to_string())?);
+    }
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(p.file_name.clone()).mime_str(p.content_type)?;
+    let res: Value = http
+        .client
+        .post(url)
+        .headers(multipart_headers())
+        .multipart(reqwest::multipart::Form::new().part(p.field, part))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    unwrap_response(session, res)
+}
+
 /// zca-js `getClientMessageType`: the number `qmsgType` carries for a message type.
 pub(crate) fn client_message_type(msg_type: &str) -> i64 {
     match msg_type {
@@ -450,6 +494,69 @@ pub(crate) fn plan_undo(imei: &str, thread_id: &str, thread_type: ThreadType, ms
 mod tests {
     use super::*;
     use ThreadType::{Group, User};
+
+    /// A one-shot local HTTP server: reads one request (head and body), answers with `reply`
+    /// (a JSON body), and hands the request back.
+    fn serve_once(reply: String) -> (String, std::sync::mpsc::Receiver<(String, Vec<u8>)>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let head_end = loop {
+                let n = sock.read(&mut chunk).unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break i + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+            let len = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+            while buf.len() < head_end + len {
+                let n = sock.read(&mut chunk).unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let _ = sock.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes());
+            let _ = tx.send((head, buf[head_end..head_end + len].to_vec()));
+        });
+        (base, rx)
+    }
+
+    #[tokio::test]
+    async fn a_multipart_upload_goes_out_with_the_form_in_the_body_and_the_encrypted_params_in_the_query() {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        let key = B64.encode([7u8; 16]);
+        let inner = json!({"error_code": 0, "data": {"photoId": 4000000000000000001i64, "normalUrl": "https://f.example.test/n.jpg"}}).to_string();
+        let reply = json!({"error_code": 0, "data": crypto::encode_aes(&key, &inner).unwrap()}).to_string();
+        let (base, rx) = serve_once(reply);
+        let session = Session { uid: "1".into(), secret_key: key.clone(), ws_urls: vec![], service_map: json!({"file": [base]}), settings: Value::Null };
+        let http = Http::new(crate::DEFAULT_USER_AGENT, crate::CookieJar::new()).unwrap();
+        let req = crate::upload::plan_chunk(true, "IMEI", "1000000000000000001", User, "a b.png", 3, 1, 1, 1_700_000_000_000);
+        let got = run_upload(&http, &session, &req, vec![1, 2, 3]).await.unwrap();
+        assert_eq!(got["photoId"], 4000000000000000001i64);
+
+        let (head, body) = rx.recv().unwrap();
+        let first = head.lines().next().unwrap();
+        assert!(first.starts_with("POST /api/message/photo_original/upload?"), "{first}");
+        let query = first.split_whitespace().nth(1).unwrap().split_once('?').unwrap().1;
+        let q: std::collections::HashMap<String, String> = reqwest::Url::parse(&format!("http://x/?{query}")).unwrap().query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        assert_eq!((q["type"].as_str(), q["zpw_ver"].as_str(), q["zpw_type"].as_str()), ("2", "685", "30"));
+        // the params in the query decrypt to the plan's JSON
+        let plain: Value = serde_json::from_str(&crypto::decode_aes(&key, &q["params"]).unwrap()).unwrap();
+        assert_eq!(plain, req.params);
+        let lower = head.to_ascii_lowercase();
+        let boundary = lower.lines().find_map(|l| l.strip_prefix("content-type: multipart/form-data; boundary=")).expect("a multipart content type").to_string();
+        assert_eq!(lower.matches("content-type:").count(), 1, "one content type: {head}");
+        assert!(lower.contains("referer: https://chat.zalo.me/") && lower.contains("origin: https://chat.zalo.me"), "{head}");
+        let text = String::from_utf8_lossy(&body).to_string();
+        assert!(text.to_ascii_lowercase().contains(&format!("--{boundary}")), "{text:?}");
+        assert!(text.contains("name=\"chunkContent\"; filename=\"a b.png\""), "{text:?}");
+        assert!(text.to_ascii_lowercase().contains("content-type: application/octet-stream"), "{text:?}");
+        assert!(body.windows(5).any(|w| w == [b'\n', 1, 2, 3, b'\r']), "the three bytes sit between the part head and the closing boundary");
+    }
 
     fn text_ref() -> ZaloRef {
         ZaloRef {

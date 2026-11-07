@@ -13,10 +13,12 @@ use crate::events::{cmd, decode_event_data, encode_frame, parse_frame};
 use crate::http::Http;
 use crate::message::{Delivered, Seen, ThreadType, Undo, ZaloMessage};
 use crate::react::Reaction;
+use crate::upload::{file_done_events, FileWaiters};
 use crate::session::{Session, API_TYPE, API_VERSION};
 use futures_util::{SinkExt, Stream, StreamExt};
 use serde_json::{json, Value};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -160,7 +162,7 @@ const STABLE: Duration = Duration::from_secs(30);
 
 /// Spawn the listener task (needs a running tokio runtime). Dropping the returned
 /// [`Listener`] (or the sender) stops it.
-pub(crate) fn spawn(http: &Http, session: &Session, user_agent: &str, opts: ListenOptions) -> Result<(Listener, CmdSender)> {
+pub(crate) fn spawn(http: &Http, session: &Session, user_agent: &str, opts: ListenOptions, waiters: Arc<FileWaiters>) -> Result<(Listener, CmdSender)> {
     if session.ws_urls.is_empty() {
         return Err(Error::protocol("login gave no websocket endpoints"));
     }
@@ -180,7 +182,7 @@ pub(crate) fn spawn(http: &Http, session: &Session, user_agent: &str, opts: List
         let mut endpoint = 0usize;
         loop {
             let started = tokio::time::Instant::now();
-            let res = run_once(&urls[endpoint % urls.len()], &cookie, &ua, &uid, ping_ms, &ev_tx, &mut cmd_rx).await;
+            let res = run_once(&urls[endpoint % urls.len()], &cookie, &ua, &uid, ping_ms, &ev_tx, &mut cmd_rx, &waiters).await;
             let reason = match res {
                 Ok(Stop::Final(why)) => {
                     let _ = ev_tx.send(Event::Stopped { reason: why }).await;
@@ -246,6 +248,7 @@ async fn run_once(
     ping_ms: u64,
     ev: &mpsc::Sender<Event>,
     cmds: &mut mpsc::Receiver<Cmd>,
+    waiters: &FileWaiters,
 ) -> Result<Stop> {
     let mut req = ws_url(base)?.into_client_request()?;
     let h = req.headers_mut();
@@ -316,6 +319,15 @@ async fn run_once(
                             }
                         }
                     }
+                    (1, cmd::CONTROLS, 0) => {
+                        // best effort, like receipts. Only "file done" is used: it tells an upload
+                        // waiting in `Client::send_file` where its file now lives (zca-js `uploadCallbacks`)
+                        if let Ok(data) = decode_event_data(&f.body, cipher_key.as_deref()) {
+                            for done in file_done_events(&data) {
+                                waiters.done(done);
+                            }
+                        }
+                    }
                     (_, cmd::REACTIONS, _) => {
                         // best effort, like receipts: a bad frame must not drop the connection
                         if let Ok(data) = decode_event_data(&f.body, cipher_key.as_deref()) {
@@ -372,6 +384,24 @@ mod tests {
     fn the_websocket_url_carries_the_web_client_version_and_type() {
         let u = ws_url("wss://ws1-msg.chat.zalo.me/?foo=1").unwrap();
         assert!(u.contains("foo=1") && u.contains("zpw_ver=685") && u.contains("zpw_type=30") && u.contains("&t="), "{u}");
+    }
+
+    #[tokio::test]
+    async fn a_601_control_frame_with_file_done_wakes_the_upload_that_waits_for_it() {
+        // the frame as the socket delivers it: version 1, cmd 601 LE, sub 0, then the JSON envelope
+        let controls = json!({"data": {"controls": [{"content": {"act_type": "file_done", "fileId": 4000000000000000002i64, "data": {"url": "https://f.example.test/f/abc"}}}]}, "error_code": 0});
+        let bytes = encode_frame(1, cmd::CONTROLS, 0, &json!({"encrypt": 0, "data": controls.to_string()}));
+        assert_eq!(&bytes[..4], &[1, 0x59, 0x02, 0]);
+        let f = parse_frame(&bytes).unwrap().unwrap();
+        assert_eq!((f.version, f.cmd, f.sub), (1, 601, 0));
+        let waiters = Arc::new(FileWaiters::default());
+        let w = waiters.clone();
+        let waiting = tokio::spawn(async move { w.wait("4000000000000000002", Duration::from_secs(5)).await });
+        tokio::task::yield_now().await;
+        for done in file_done_events(&decode_event_data(&f.body, None).unwrap()) {
+            waiters.done(done);
+        }
+        assert_eq!(waiting.await.unwrap().unwrap().url, "https://f.example.test/f/abc");
     }
 
     #[tokio::test]

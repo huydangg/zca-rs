@@ -4,7 +4,7 @@ Rust crate **`zca-rust`** (import as `zca_rust`).
 
 
 An **unofficial Zalo Web API client in Rust**: log in by QR code or saved cookies, listen
-for messages in real time, send messages, quotes, mentions, reactions and stickers.
+for messages in real time, send messages, quotes, mentions, reactions, stickers, images, files and GIFs.
 
 It talks to Zalo the way the official web client (`chat.zalo.me`) does, and is inspired by
 (and cross-checked against) [**zca-js**](https://github.com/RFS-ADRENO/zca-js) by
@@ -84,6 +84,26 @@ client.send_text("<uid>", ThreadType::User, "hello").await?;
 client.send_text("<group id>", ThreadType::Group, "hello group").await?;
 ```
 
+**4. Send an image, a file or a GIF** (same care as above; replace the placeholders; a file needs
+the listener running, because Zalo reports where it stored the file on the websocket):
+
+```rust
+use zca_rust::Upload;
+
+let limits = client.share_limits()?; // size limit, blacklisted extensions, chunk size
+client.send_image("<uid>", ThreadType::User, Upload::path("photo.jpg"), "a caption").await?;
+client.send_gif("<group id>", ThreadType::Group, Upload::path("cat.gif"), "").await?;
+let _listener = client.listen()?;
+client.send_file("<uid>", ThreadType::User, Upload::path("report.pdf"), "").await?;
+// or let the extension pick (.gif -> GIF, jpg/png/webp -> photo, else file):
+client.send_attachment("<uid>", ThreadType::User, Upload::bytes("note.txt", b"hello".to_vec()), "").await?;
+```
+
+A file over `limits.max_bytes()` (or with a blacklisted extension) is refused with `Error::Invalid`
+before anything is uploaded. A caption goes with a photo as its description; with a file or a GIF it is
+a text message of its own sent just before it, as zca-js does. These calls follow zca-js's upload code
+but have not been run against the live service yet.
+
 Runnable versions are in [`examples/`](examples): `login_qr` (prints the QR in the terminal,
 saves the credentials to the file you name) and `echo` (prints incoming messages; it is
 read-only and never replies).
@@ -112,14 +132,15 @@ cargo run -p zca-rust --example echo -- zalo.json
 | Reactions | yes | `Client::add_reaction` with the six panel icons (`ReactionIcon`); `None` removes |
 | Stickers | yes | `search_stickers`, `sticker_detail`, `send_sticker` |
 | Friends / groups | yes | `friends`, `group_ids`, `group_names`, `group_info`, `group_members` |
-| GIFs | receive only | `Content::Gif` (`chat.gif`): link, preview, size. Sending is not implemented: zca-js sends a GIF by uploading the file (`upthumb` + the `gif` upload), and neither it nor any source we could check documents a GIF search |
-| Send images / files | no | not implemented yet (needs the upload endpoints) |
+| GIFs | yes (send: unverified live) | receive: `Content::Gif` (`chat.gif`): link, preview, size. Send: `send_gif` (zca-js's `upthumb` + `gif` upload); no GIF search exists in any source we could check |
+| Send images / files | yes (unverified live) | `send_image`, `send_file`, `send_gif`, `send_attachment` (picks by extension); chunked multipart uploads as in zca-js, size and extension limits from the login settings (`share_limits`); a file's upload waits for Zalo's "file done" frame on the listener, so `listen()` must be running |
 | Voice, video, location, polls, ... | no | |
 | Proxy, custom user agent per call | no | the user agent is part of `Credentials` |
 
 The crate is async on `tokio` with `reqwest` (rustls) and `tokio-tungstenite`. The default
 `qr` feature adds `zca_rust::qr` (sample the login QR PNG into a module grid and draw it with
-ANSI half blocks); disable it with `default-features = false` to drop `image`, `qrcode`, `rqrr`.
+ANSI half blocks); disable it with `default-features = false` to drop `qrcode`, `rqrr`. (`image` stays: it reads
+the size of an image or GIF you send from its header.)
 
 ## Behaving like the web client
 

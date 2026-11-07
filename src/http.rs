@@ -105,9 +105,24 @@ pub(crate) fn api_headers() -> HeaderMap {
     h
 }
 
+/// Headers for the multipart uploads: the chat API's, but no `Content-Type` (the form brings
+/// its own, with the boundary; zca-js lets `form-data`'s headers win the same way).
+pub(crate) fn multipart_headers() -> HeaderMap {
+    let mut h = api_headers();
+    h.remove(CONTENT_TYPE);
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multipart_headers_leave_the_content_type_to_the_form() {
+        let h = multipart_headers();
+        assert!(h.get(CONTENT_TYPE).is_none());
+        assert_eq!((&h[REFERER], &h[ACCEPT]), (&api_headers()[REFERER], &api_headers()[ACCEPT]));
+    }
 
     #[test]
     fn api_headers_look_like_the_web_client() {

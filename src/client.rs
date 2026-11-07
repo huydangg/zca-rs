@@ -10,6 +10,7 @@ use crate::message::{id_of, ThreadType, ZaloRef};
 use crate::react::ReactionIcon;
 use crate::session::{self, Session};
 use crate::sticker::{self, Sticker};
+use crate::upload::{self, FileWaiters, SentAttachment, ShareLimits, Upload, UploadKind};
 use crate::ws::{self, Cmd, CmdSender, ListenOptions, Listener};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -28,7 +29,7 @@ pub struct SentMessage {
     pub raw: Value,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -43,6 +44,8 @@ struct Inner {
     language: String,
     /// Where history requests go: the listener started last.
     listener: Mutex<Option<CmdSender>>,
+    /// Uploads waiting for the listener to see their "file done" frame.
+    file_waiters: Arc<FileWaiters>,
 }
 
 /// A logged-in Zalo web session. Cheap to clone (all clones share the session).
@@ -81,7 +84,7 @@ impl Client {
     pub async fn from_credentials(creds: Credentials) -> Result<Client> {
         let http = Http::new(&creds.user_agent, creds.cookies.clone())?;
         let session = session::login_cookie(&http, &creds).await?;
-        Ok(Client { inner: Arc::new(Inner { http, session, imei: creds.imei, user_agent: creds.user_agent, language: creds.language, listener: Mutex::new(None) }) })
+        Ok(Client { inner: Arc::new(Inner { http, session, imei: creds.imei, user_agent: creds.user_agent, language: creds.language, listener: Mutex::new(None), file_waiters: Arc::default() }) })
     }
 
     /// The credentials as they are now, with the cookies the server refreshed during this
@@ -124,7 +127,7 @@ impl Client {
     /// this client is stopped.
     pub fn listen_with(&self, opts: ListenOptions) -> Result<Listener> {
         let i = &self.inner;
-        let (listener, cmds) = ws::spawn(&i.http, &i.session, &i.user_agent, opts)?;
+        let (listener, cmds) = ws::spawn(&i.http, &i.session, &i.user_agent, opts, i.file_waiters.clone())?;
         *i.listener.lock().map_err(|_| Error::protocol("listener lock poisoned"))? = Some(cmds);
         Ok(listener)
     }
@@ -211,6 +214,58 @@ impl Client {
         Ok(Self::sent(self.run(&planned).await?, client_id))
     }
 
+    // ------------------------------------------------------------ images, files, GIFs
+
+    /// What this account may share: the size limit, the blacklisted extensions, the chunk size
+    /// (the `sharefile` block of the login settings). Err when the settings carry none.
+    pub fn share_limits(&self) -> Result<ShareLimits> {
+        ShareLimits::from_settings(&self.inner.session.settings)
+    }
+
+    fn upload_ctx<'a>(&'a self, limits: &'a ShareLimits) -> upload::Ctx<'a> {
+        let i = &self.inner;
+        upload::Ctx { http: &i.http, session: &i.session, imei: &i.imei, limits, waiters: &i.file_waiters }
+    }
+
+    /// Whether a listener is running to hear Zalo's "file done" frames.
+    fn listening(&self) -> bool {
+        self.inner.listener.lock().ok().and_then(|g| g.as_ref().map(|tx| !tx.is_closed())).unwrap_or(false)
+    }
+
+    /// Send a photo (`jpg`, `jpeg`, `png` or `webp`) with `caption` as its description (may be
+    /// empty). Refused before any upload when it is over [`Client::share_limits`].
+    pub async fn send_image(&self, thread_id: &str, thread_type: ThreadType, image: Upload, caption: &str) -> Result<SentAttachment> {
+        let limits = self.share_limits()?;
+        self.upload_ctx(&limits).send_image(thread_id, thread_type, image, caption).await
+    }
+
+    /// Send a file of any kind. Zalo says where it stored the file on the websocket, so the
+    /// listener must be running ([`Client::listen`]) or this is [`Error::NotListening`]. A
+    /// `caption` is sent as a text message of its own, just before the file (as zca-js does).
+    pub async fn send_file(&self, thread_id: &str, thread_type: ThreadType, file: Upload, caption: &str) -> Result<SentAttachment> {
+        let limits = self.share_limits()?;
+        if !self.listening() {
+            return Err(Error::NotListening);
+        }
+        self.upload_ctx(&limits).send_file(thread_id, thread_type, file, caption).await
+    }
+
+    /// Send a `.gif`. A `caption` is sent as a text message of its own, just before the GIF.
+    pub async fn send_gif(&self, thread_id: &str, thread_type: ThreadType, gif: Upload, caption: &str) -> Result<SentAttachment> {
+        let limits = self.share_limits()?;
+        self.upload_ctx(&limits).send_gif(thread_id, thread_type, gif, caption).await
+    }
+
+    /// Send `source` the way zca-js picks by extension: `.gif` as a GIF, `jpg` / `jpeg` / `png` /
+    /// `webp` as a photo, anything else as a file (which needs the listener, see [`Client::send_file`]).
+    pub async fn send_attachment(&self, thread_id: &str, thread_type: ThreadType, source: Upload, caption: &str) -> Result<SentAttachment> {
+        match UploadKind::of_extension(&source.name_and_extension()?.1) {
+            UploadKind::Image => self.send_image(thread_id, thread_type, source, caption).await,
+            UploadKind::Gif => self.send_gif(thread_id, thread_type, source, caption).await,
+            _ => self.send_file(thread_id, thread_type, source, caption).await,
+        }
+    }
+
     // ------------------------------------------------------------ stickers
 
     /// The stickers `keyword` suggests, with their details (at most [`sticker::SEARCH_MAX`]).
@@ -260,7 +315,7 @@ mod tests {
     fn offline_client() -> Client {
         let session = Session { uid: "1".into(), secret_key: String::new(), ws_urls: vec![], service_map: Value::Null, settings: Value::Null };
         let http = Http::new(DEFAULT_USER_AGENT, CookieJar::new()).unwrap();
-        Client { inner: Arc::new(Inner { http, session, imei: "IMEI".into(), user_agent: DEFAULT_USER_AGENT.into(), language: "vi".into(), listener: Mutex::new(None) }) }
+        Client { inner: Arc::new(Inner { http, session, imei: "IMEI".into(), user_agent: DEFAULT_USER_AGENT.into(), language: "vi".into(), listener: Mutex::new(None), file_waiters: Arc::default() }) }
     }
 
     #[tokio::test]
@@ -275,6 +330,49 @@ mod tests {
         // a sticker needs its id and type
         assert!(invalid(c.send_sticker("42", ThreadType::User, &Sticker::default()).await.unwrap_err()));
         assert!(invalid(c.search_stickers("  ").await.unwrap_err()));
+    }
+
+    /// A client whose login settings carry `sharefile` limits (1 MB, 4-byte chunks, no `exe`).
+    fn sharing_client() -> Client {
+        let settings = serde_json::json!({"features": {"sharefile": {"max_file": 20, "max_size_share_file_v3": 1, "chunk_size_file": 4, "restricted_ext_file": ["exe"]}}});
+        let session = Session { uid: "1".into(), secret_key: String::new(), ws_urls: vec![], service_map: Value::Null, settings };
+        let http = Http::new(DEFAULT_USER_AGENT, CookieJar::new()).unwrap();
+        Client { inner: Arc::new(Inner { http, session, imei: "IMEI".into(), user_agent: DEFAULT_USER_AGENT.into(), language: "vi".into(), listener: Mutex::new(None), file_waiters: Arc::default() }) }
+    }
+
+    #[tokio::test]
+    async fn uploads_are_refused_before_the_network() {
+        let png = |n: &str| Upload::bytes(n, vec![1u8, 2, 3]);
+        // no sharefile settings: nothing can be checked, so nothing is sent
+        let c = offline_client();
+        assert!(matches!(c.share_limits(), Err(Error::Protocol(_))));
+        assert!(matches!(c.send_image("42", ThreadType::User, png("a.png"), "").await, Err(Error::Protocol(_))));
+
+        let c = sharing_client();
+        assert_eq!(c.share_limits().unwrap().max_bytes(), 1024 * 1024);
+        let invalid = |e: Error| matches!(e, Error::Invalid(_));
+        let over = || Upload::bytes("big.bin", vec![0u8; 1024 * 1024 + 1]);
+        assert!(invalid(c.send_image("42", ThreadType::User, Upload::bytes("big.png", vec![0u8; 1024 * 1024 + 1]), "").await.unwrap_err()));
+        assert!(invalid(c.send_image("42", ThreadType::User, Upload::bytes("a.pdf", vec![1]), "").await.unwrap_err()), "not an image");
+        assert!(invalid(c.send_image("", ThreadType::User, png("a.png"), "").await.unwrap_err()), "no thread");
+        assert!(invalid(c.send_gif("42", ThreadType::Group, png("a.png"), "").await.unwrap_err()), "not a gif");
+        assert!(invalid(c.send_gif("42", ThreadType::Group, Upload::bytes("big.gif", vec![0u8; 1024 * 1024 + 1]), "").await.unwrap_err()));
+        // a file needs the listener first; the size and blacklist checks follow before anything is uploaded
+        assert!(matches!(c.send_file("42", ThreadType::User, over(), "").await, Err(Error::NotListening)));
+        assert!(matches!(c.send_attachment("42", ThreadType::User, over(), "").await, Err(Error::NotListening)));
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        *c.inner.listener.lock().unwrap() = Some(tx);
+        assert!(c.listening());
+        let e = c.send_file("42", ThreadType::User, over(), "").await.unwrap_err();
+        assert_eq!(e.to_string(), "File big.bin size exceed maximum size of 1MB");
+        let e = c.send_attachment("42", ThreadType::User, Upload::bytes("run.EXE", vec![1]), "").await.unwrap_err();
+        assert_eq!(e.to_string(), "File extension \"exe\" is not allowed");
+        assert!(invalid(c.send_file("42", ThreadType::User, Upload::path("/no/such/file.bin"), "").await.unwrap_err()));
+        // a listener that has ended does not count
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        *c.inner.listener.lock().unwrap() = Some(tx);
+        drop(rx);
+        assert!(!c.listening());
     }
 
     #[tokio::test]

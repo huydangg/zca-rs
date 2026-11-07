@@ -2,7 +2,7 @@
 name = "zca-rust"
 version = "0.1.0"
 edition = "2021"
-description = "Unofficial Zalo Web API client: QR and cookie login, realtime listener, messages, reactions, stickers (inspired by zca-js)"
+description = "Unofficial Zalo Web API client: QR and cookie login, realtime listener, messages, reactions, stickers, images, files and GIFs (inspired by zca-js)"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/huydangg/zca-rs"
@@ -17,7 +17,8 @@ path = "src/lib.rs"
 [features]
 default = ["qr"]
 # QR helpers: sample the login QR PNG into a module grid and draw it in a terminal.
-qr = ["dep:qrcode", "dep:rqrr", "dep:image"]
+# (`image` is not optional: sending an image or a GIF reads its size from the file header.)
+qr = ["dep:qrcode", "dep:rqrr"]
 
 [dependencies]
 # --- Zalo web protocol crypto (ported from zca-js) ---
@@ -41,16 +42,18 @@ thiserror = "2.0.11"
 
 # --- network ---
 tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "json", "form", "gzip", "brotli"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "json", "form", "multipart", "gzip", "brotli"] }
 reqwest_cookie_store = "0.10"
 cookie_store = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
+# --- uploads: the pixel size of an image / GIF out of its header (also the QR helpers' decoder) ---
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+
 # --- optional: QR helpers ---
 qrcode = { version = "0.14", default-features = false, optional = true }
 rqrr = { version = "0.11", optional = true }
-image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

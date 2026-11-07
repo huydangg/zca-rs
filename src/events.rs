@@ -33,6 +33,7 @@ pub(crate) mod cmd {
     pub(crate) const OLD_GROUP_MSGS: u16 = 511; // sub 1
     pub(crate) const GROUP_MSGS: u16 = 521;
     pub(crate) const GROUP_SEEN: u16 = 522;
+    pub(crate) const CONTROLS: u16 = 601; // v1 sub 0: file_done, group events, ...
     pub(crate) const REACTIONS: u16 = 612;
     pub(crate) const DUPLICATE: u16 = 3000;
 }

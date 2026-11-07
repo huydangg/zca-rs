@@ -17,9 +17,9 @@ Modules that are function-by-function ports of zca-js code:
 | `src/login_qr.rs` | `apis/loginQR` |
 | `src/ws.rs` | `Listener` |
 
-Modules that follow zca-js's request shapes, field names and rules (`sendMessage`, `addReaction`,
+Modules that follow zca-js's request shapes, field names and rules (`sendMessage`, `uploadAttachment`, `addReaction`,
 `getStickers`, `UserMessage` / `GroupMessage`, `Undo`, ...) and are derived from them:
-`src/api.rs`, `src/message.rs`, `src/react.rs`, `src/sticker.rs`, `src/mention.rs`.
+`src/api.rs`, `src/message.rs`, `src/react.rs`, `src/sticker.rs`, `src/mention.rs`, `src/upload.rs`.
 
 The zca-js license text, verbatim:
 
