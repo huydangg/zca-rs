@@ -61,6 +61,7 @@ pub(crate) fn thread_of(raw: &Value, thread_type: ThreadType, own_uid: &str) -> 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     Sticker,
+    Gif,
     Image,
     Video,
     Audio,
@@ -73,7 +74,9 @@ fn class_of(msg_type: &str) -> Class {
     let t = msg_type.to_ascii_lowercase();
     if t.contains("sticker") {
         Class::Sticker
-    } else if t.contains("photo") || t.contains("gif") || t.contains("doodle") {
+    } else if t.contains("gif") {
+        Class::Gif
+    } else if t.contains("photo") || t.contains("doodle") {
         Class::Image
     } else if t.contains("video") {
         Class::Video
@@ -155,7 +158,7 @@ impl Card {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AttachmentKind {
-    /// A photo, GIF or doodle.
+    /// A photo or doodle.
     Image,
     /// A video.
     Video,
@@ -191,6 +194,25 @@ pub struct StickerContent {
     pub card: Card,
 }
 
+/// A GIF message (`chat.gif`).
+///
+/// The content is a card like a photo's (`href`, `thumb`, and a `params` JSON string); the
+/// size is read from `params.width` / `params.height`, else from the content itself. What
+/// `href` points to (a `.gif`, an animated WebP, a video) is up to Zalo: look at the bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GifContent {
+    /// The link to the moving picture (`params.hd`, else `href`); `None` when the card has none.
+    pub url: Option<String>,
+    /// The preview image URL; `None` when empty.
+    pub thumb: Option<String>,
+    /// Width in pixels, when the card says.
+    pub width: Option<u32>,
+    /// Height in pixels, when the card says.
+    pub height: Option<u32>,
+    /// The rest of the content (the message's whole JSON stays in [`ZaloMessage::raw`]).
+    pub card: Card,
+}
+
 /// What a message says. The undecoded content stays in [`ZaloMessage::raw`].
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -201,6 +223,8 @@ pub enum Content {
     Attachment(Attachment),
     /// A sticker.
     Sticker(StickerContent),
+    /// A GIF (`chat.gif`).
+    Gif(GifContent),
     /// A shared link (`chat.recommended` / `chat.link`).
     Link(Card),
     /// A call log card.
@@ -263,6 +287,13 @@ impl Content {
                         url: sticker_url(c),
                         card,
                     }),
+                    Class::Gif => Content::Gif(GifContent {
+                        url: card.url().map(String::from),
+                        thumb: card.thumb.clone(),
+                        width: pixels(&card.params["width"]).or_else(|| pixels(&c["width"])),
+                        height: pixels(&card.params["height"]).or_else(|| pixels(&c["height"])),
+                        card,
+                    }),
                     Class::Link => Content::Link(card),
                     Class::Image => Content::Attachment(Attachment { kind: AttachmentKind::Image, card }),
                     Class::Video => Content::Attachment(Attachment { kind: AttachmentKind::Video, card }),
@@ -274,6 +305,11 @@ impl Content {
             other => Content::Other(other.clone()),
         }
     }
+}
+
+/// A size in pixels out of a JSON number or a string of digits (0 is no size).
+fn pixels(v: &Value) -> Option<u32> {
+    sticker_id(v).filter(|n| *n > 0).and_then(|n| u32::try_from(n).ok())
 }
 
 fn sticker_id(v: &Value) -> Option<u64> {
@@ -686,6 +722,31 @@ mod tests {
         // a content that is neither text nor a card
         let odd = json!({"msgId":"5","uidFrom":"42","idTo":"0","ts":"1","msgType":"webchat","content":null});
         assert_eq!(dm(&odd).content, Content::Other(Value::Null));
+    }
+
+    #[test]
+    fn a_gif_message_is_typed_with_its_link_preview_and_size() {
+        // sizes in `params` (numbers or strings); a high-resolution link wins over `href`
+        let raw = json!({"msgId":"20","uidFrom":"42","idTo":"0","dName":"Alice","ts":"1700000000000","msgType":"chat.gif",
+            "content":{"title":"","description":"","href":"https://f.example.test/cat.gif","thumb":"https://f.example.test/cat-t.jpg",
+                       "params":"{\"width\":\"480\",\"height\":270}"}});
+        let m = dm(&raw);
+        let Content::Gif(g) = &m.content else { panic!("{:?}", m.content) };
+        assert_eq!(g.url.as_deref(), Some("https://f.example.test/cat.gif"));
+        assert_eq!((g.thumb.as_deref(), g.width, g.height), (Some("https://f.example.test/cat-t.jpg"), Some(480), Some(270)));
+        assert_eq!(g.card.params["width"], "480");
+        let hd = json!({"msgId":"21","uidFrom":"42","idTo":"0","ts":"1","msgType":"chat.gif",
+            "content":{"href":"https://f.example.test/a.gif","params":"{\"hd\":\"https://f.example.test/hd.gif\"}","width":64,"height":"0"}});
+        let Content::Gif(g) = dm(&hd).content else { panic!() };
+        // the size may sit in the content itself; 0 is no size
+        assert_eq!((g.url.as_deref(), g.width, g.height), (Some("https://f.example.test/hd.gif"), Some(64), None));
+        // a GIF without a link is still a GIF; a photo stays an attachment
+        let bare = json!({"msgId":"22","uidFrom":"42","idTo":"0","ts":"1","msgType":"chat.gif","content":{"title":""}});
+        let Content::Gif(g) = dm(&bare).content else { panic!() };
+        assert_eq!((g.url, g.thumb, g.width, g.height), (None, None, None, None));
+        let photo = json!({"msgId":"23","uidFrom":"42","idTo":"0","ts":"1","msgType":"chat.photo","content":{"href":"https://f.example.test/p.jpg"}});
+        assert!(matches!(dm(&photo).content, Content::Attachment(_)));
+        assert_eq!(m.raw["msgType"], "chat.gif", "the raw JSON is kept");
     }
 
     #[test]

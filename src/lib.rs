@@ -77,7 +77,7 @@ pub use http::DEFAULT_USER_AGENT;
 pub use login_qr::QrEvent;
 pub use mention::{Mention, MentionTarget, MENTIONS_MAX};
 pub use message::{
-    sticker_url, Attachment, AttachmentKind, Card, Content, Delivered, MessageMention, Quote, Seen, StickerContent, ThreadType, Undo,
+    sticker_url, Attachment, AttachmentKind, Card, Content, Delivered, GifContent, MessageMention, Quote, Seen, StickerContent, ThreadType, Undo,
     ZaloMessage, ZaloRef,
 };
 pub use react::{Reaction, ReactionIcon};

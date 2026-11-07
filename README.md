@@ -100,7 +100,7 @@ cargo run -p zca-rust --example echo -- zalo.json
 | QR login | yes | `Client::login_qr`; QR as PNG and `data:` URL, scanned state, expiry |
 | Cookie login | yes | `Client::from_credentials`; `Credentials` + `CookieJar` are serde and exportable |
 | Realtime listener | yes | `Client::listen` (a `Stream` of `Event`), configurable `ReconnectPolicy`, endpoint rotation |
-| Incoming messages | yes | `ZaloMessage` for DMs and groups: text, attachments, stickers, links, call logs, quote, mentions; raw JSON kept |
+| Incoming messages | yes | `ZaloMessage` for DMs and groups: text, attachments, stickers, GIFs, links, call logs, quote, mentions; raw JSON kept |
 | History | yes | `Client::history` requests a page, it arrives as `Event::History` |
 | Recall (undo) events | yes | `Event::Undo` |
 | Seen / delivered receipts | yes | `Event::Seen`; `Event::Delivered` is best effort |
@@ -112,6 +112,7 @@ cargo run -p zca-rust --example echo -- zalo.json
 | Reactions | yes | `Client::add_reaction` with the six panel icons (`ReactionIcon`); `None` removes |
 | Stickers | yes | `search_stickers`, `sticker_detail`, `send_sticker` |
 | Friends / groups | yes | `friends`, `group_ids`, `group_names`, `group_info`, `group_members` |
+| GIFs | receive only | `Content::Gif` (`chat.gif`): link, preview, size. Sending is not implemented: zca-js sends a GIF by uploading the file (`upthumb` + the `gif` upload), and neither it nor any source we could check documents a GIF search |
 | Send images / files | no | not implemented yet (needs the upload endpoints) |
 | Voice, video, location, polls, ... | no | |
 | Proxy, custom user agent per call | no | the user agent is part of `Credentials` |

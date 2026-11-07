@@ -14,6 +14,7 @@ fn describe(m: &ZaloMessage) -> String {
     match &m.content {
         Content::Text(t) => t.clone(),
         Content::Sticker(_) => "[sticker]".into(),
+        Content::Gif(g) => format!("[gif {}x{}]", g.width.unwrap_or(0), g.height.unwrap_or(0)),
         Content::Attachment(a) => format!("[{:?}] {}", a.kind, a.card.title.as_deref().unwrap_or("")),
         Content::Link(c) => format!("[link] {}", c.href.as_deref().unwrap_or("")),
         Content::Call { .. } => "[call]".into(),
