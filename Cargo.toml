@@ -2,7 +2,7 @@
 name = "zca-rust"
 version = "0.1.0"
 edition = "2021"
-description = "Unofficial Zalo Web API client: QR and cookie login, realtime listener, messages, reactions, stickers, images, files and GIFs (inspired by zca-js)"
+description = "Unofficial Zalo Web API client: QR and cookie login, realtime listener, messages, reactions, stickers, images, files and GIFs; a Rust rewrite of zca-js"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/huydangg/zca-rs"

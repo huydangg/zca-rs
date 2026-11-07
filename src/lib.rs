@@ -1,6 +1,6 @@
 //! `zca-rust`: an unofficial Zalo Web API client.
 //!
-//! A Rust take on [zca-js](https://github.com/RFS-ADRENO/zca-js): it talks to Zalo the way
+//! A Rust rewrite of [zca-js](https://github.com/RFS-ADRENO/zca-js): it talks to Zalo the way
 //! the official web client (`chat.zalo.me`) does, so it can log in by QR code or saved
 //! cookies, listen for messages in real time and send messages, quotes, mentions,
 //! reactions, stickers, images, files, GIFs and recalls.

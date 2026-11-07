@@ -6,12 +6,11 @@ Rust crate **`zca-rust`** (import as `zca_rust`).
 An **unofficial Zalo Web API client in Rust**: log in by QR code or saved cookies, listen
 for messages in real time, send messages, quotes, mentions, reactions, stickers, images, files and GIFs.
 
-It talks to Zalo the way the official web client (`chat.zalo.me`) does, and is inspired by
-(and cross-checked against) [**zca-js**](https://github.com/RFS-ADRENO/zca-js) by
-RFS-ADRENO, truong9c2208 and JustKemForFun (and contributors): the request shapes, the AES
-parameter crypto and the websocket framing follow that project, several modules are
-function-by-function ports of it, and several test vectors were produced by running zca-js's
-own code. zca-js is MIT licensed; its notice is reproduced in
+It is a **Rust rewrite of [zca-js](https://github.com/RFS-ADRENO/zca-js)** by
+RFS-ADRENO, truong9c2208 and JustKemForFun (and contributors), and talks to Zalo the way the
+official web client (`chat.zalo.me`) does: the request shapes, the AES parameter crypto, the
+websocket framing and the upload flows are ported from zca-js module by module, and several
+test vectors were produced by running zca-js's own code to cross-check the port. zca-js is MIT licensed; its notice is reproduced in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Credit and thanks to them; this crate would
 not exist without that reverse-engineering work.
 
