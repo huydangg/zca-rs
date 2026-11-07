@@ -1,0 +1,4 @@
+/zalo*.json
+*creds*.json
+*.cookies.json
+/target

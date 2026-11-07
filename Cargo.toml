@@ -1,0 +1,63 @@
+[package]
+name = "zca-rust"
+version = "0.1.0"
+edition = "2021"
+description = "Unofficial Zalo Web API client: QR and cookie login, realtime listener, messages, reactions, stickers (inspired by zca-js)"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/huydangg/zca-rs"
+homepage = "https://github.com/huydangg/zca-rs"
+keywords = ["zalo", "chat", "messaging", "websocket", "api-client"]
+categories = ["api-bindings", "network-programming"]
+
+[lib]
+name = "zca_rust"
+path = "src/lib.rs"
+
+[features]
+default = ["qr"]
+# QR helpers: sample the login QR PNG into a module grid and draw it in a terminal.
+qr = ["dep:qrcode", "dep:rqrr", "dep:image"]
+
+[dependencies]
+# --- Zalo web protocol crypto (ported from zca-js) ---
+aes = "0.8.4"
+cbc = { version = "0.1.2", features = ["alloc"] }
+cipher = { version = "0.4.4", features = ["alloc", "block-padding"] }
+md-5 = "0.10.6"
+hex = "0.4.3"
+base64 = "0.22.1"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+rand = "0.8.5"
+uuid = { version = "1", features = ["v4"] }
+percent-encoding = "2"
+regex = "1"
+
+# --- serialization / errors ---
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+thiserror = "2.0.11"
+
+# --- network ---
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "json", "form", "gzip", "brotli"] }
+reqwest_cookie_store = "0.10"
+cookie_store = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+# --- optional: QR helpers ---
+qrcode = { version = "0.14", default-features = false, optional = true }
+rqrr = { version = "0.11", optional = true }
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+
+[[example]]
+name = "login_qr"
+required-features = ["qr"]
+
+[[example]]
+name = "echo"
